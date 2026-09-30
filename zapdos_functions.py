@@ -1,8 +1,8 @@
-"""Turn a raw scakit funcdemo capture into a Hugging Face dataset for zapdos-alignment's annotate.py, with columns
+"""Turn a raw scakit function capture into a Hugging Face dataset for zapdos-alignment's annotate.py, with columns
 "trace" (the repetitions averaged, in volts, float32, cropped to the trigger pulse), "source" (the function's C code),
 "project" and "num_samples". The capture's attributes go into info.description.
 
-    zapdos-funcdemo captures/capture_<...>/ my-dataset/
+    zapdos-functions captures/capture_<...>/ my-dataset/
 """
 import json
 from pathlib import Path
