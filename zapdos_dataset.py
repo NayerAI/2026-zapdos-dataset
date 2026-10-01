@@ -1,9 +1,8 @@
-"""Turn a raw scakit seqdemo capture, or a directory of its seq_export recordings (.npz), into a Hugging Face dataset
-with columns "audio" (the repetitions averaged, float32), "text" (the listing verbatim), "opcodes", "project" and
-"num_samples". The capture's zarr.json files go into info.description.
+"""Turn a raw scakit seqdemo capture into a Hugging Face dataset with columns "audio" (the repetitions averaged,
+float32), "text" (the listing verbatim), "opcodes", "project" and "num_samples".
+The capture's zarr.json files go into info.description.
 
     zapdos-dataset captures/capture_<...>/ my-dataset/
-    zapdos-dataset seq_traces/ my-dataset/
 """
 import json
 from pathlib import Path
@@ -18,13 +17,6 @@ def row(name, traces, text, keep_repetitions=False):
     audio = (traces if keep_repetitions else traces.mean(axis=0, dtype=np.float64)).astype(np.float32)
     opcodes = " ".join(line.split()[0] for line in text.splitlines() if line.strip())
     return {"audio": audio, "text": text, "opcodes": opcodes, "project": name, "num_samples": audio.shape[-1]}
-
-
-def npz_rows(paths, keep_repetitions):
-    for path in paths:
-        with np.load(path) as npz:
-            text = npz["sequence" if "sequence" in npz else "instructions"].item()  # older captures used "instructions"
-            yield row(path.stem, npz["traces"], text, keep_repetitions)
 
 
 def sequences(directory):
@@ -48,16 +40,11 @@ def capture_rows(root, text, keep_repetitions):
 
 def build(src, keep_repetitions=False, sequences_dir=None):
     src = Path(src).resolve()
-    if (src / "zarr.json").exists():
-        root = zarr.open_group(src, mode="r")
-        text = sequences(Path(sequences_dir or root.attrs["sequences_dir"]))
-        rows = lambda: capture_rows(root, text, keep_repetitions)
-        metadata = {p.parent.name: json.loads(p.read_text()) for p in [src / "zarr.json", *sorted(src.glob("*/zarr.json"))]}
-    else:
-        paths = sorted(src.glob("*.npz"))
-        rows = lambda: npz_rows(paths, keep_repetitions)
-        metadata = {p.stem: json.loads(p.read_text()) for p in sorted(src.glob("metadata/*.json"))}
-    return Dataset.from_generator(rows, info=DatasetInfo(description=json.dumps(metadata)))
+    root = zarr.open_group(src, mode="r")
+    text = sequences(Path(sequences_dir or root.attrs["sequences_dir"]))
+    metadata = {p.parent.name: json.loads(p.read_text()) for p in [src / "zarr.json", *sorted(src.glob("*/zarr.json"))]}
+    return Dataset.from_generator(lambda: capture_rows(root, text, keep_repetitions),
+                                  info=DatasetInfo(description=json.dumps(metadata)))
 
 
 @click.command()
