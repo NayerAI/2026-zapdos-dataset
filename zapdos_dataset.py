@@ -19,12 +19,12 @@ def row(name, traces, text, keep_repetitions=False):
     return {"audio": audio, "text": text, "opcodes": opcodes, "project": name, "num_samples": audio.shape[-1]}
 
 
-def sequences(directory):
-    """seq_id -> listing, from sequences.jsonl (one per line) or <seq_id>.s, as seqdemo stores them."""
-    if (directory / "sequences.jsonl").exists():
-        texts = [json.loads(line)["sequence"].strip() for line in (directory / "sequences.jsonl").open()]
+def sequences(path):
+    """seq_id -> listing, from a jsonl file (one sequence per line) or a directory of <seq_id>.s files."""
+    if path.is_file():
+        texts = [json.loads(line)["sequence"].strip() for line in path.open()]
         return lambda seq_id: texts[seq_id - 1]
-    return lambda seq_id: (directory / f"{seq_id}.s").read_text().strip()
+    return lambda seq_id: (path / f"{seq_id}.s").read_text().strip()
 
 
 def capture_rows(root, text, keep_repetitions):
@@ -38,10 +38,14 @@ def capture_rows(root, text, keep_repetitions):
         yield row(f"trace_{ids[lo]}", block[lo - start:hi - start], text(int(ids[lo])), keep_repetitions)
 
 
-def build(src, keep_repetitions=False, sequences_dir=None):
+def build(src, keep_repetitions=False, sequences_path=None):
     src = Path(src).resolve()
     root = zarr.open_group(src, mode="r")
-    text = sequences(Path(sequences_dir or root.attrs["sequences_dir"]))
+    if sequences_path is None:  # what the capture was recorded from
+        sequences_path = Path(root.attrs["sequences_dir"])
+        if root.attrs.get("sequences_format") == "jsonl":
+            sequences_path /= "sequences.jsonl"
+    text = sequences(Path(sequences_path))
     metadata = {p.parent.name: json.loads(p.read_text()) for p in [src / "zarr.json", *sorted(src.glob("*/zarr.json"))]}
     return Dataset.from_generator(lambda: capture_rows(root, text, keep_repetitions),
                                   info=DatasetInfo(description=json.dumps(metadata)))
@@ -51,7 +55,7 @@ def build(src, keep_repetitions=False, sequences_dir=None):
 @click.argument("src")
 @click.argument("dst")
 @click.option("--keep-repetitions", is_flag=True, help="Store every repetition instead of their mean.")
-@click.option("--sequences", help="Directory with the capture's sequences (default: its sequences_dir).")
+@click.option("--sequences", help="A sequences .jsonl file or a directory of .s files (default: what the capture was recorded from).")
 def main(src, dst, keep_repetitions, sequences):
     build(src, keep_repetitions, sequences).save_to_disk(dst)
 
