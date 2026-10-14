@@ -13,7 +13,15 @@ import zarr
 from datasets import Dataset, DatasetInfo
 
 
-def rows(root, functions):
+def sources(path):
+    """function id -> C source, from a jsonl file (one {"source": ...} per line, in id order) or a directory of <id>.c."""
+    if path.is_file():
+        texts = [json.loads(line)["source"] for line in path.open()]
+        return lambda fid: texts[fid - 1]
+    return lambda fid: (path / f"{fid}.c").read_text()
+
+
+def rows(root, source):
     channel = root.attrs["scope"]["channels"][0]
     lo, hi = root.attrs["adc_mincount"], root.attrs["adc_maxcount"]
     for s in range(root.attrs["num_shards"]):
@@ -28,21 +36,21 @@ def rows(root, functions):
             counts = traces[ok[i][:len(traces)], start:end].mean(axis=0, dtype=np.float64)
             trace = (((counts - lo) / (hi - lo) - 0.5) * 2 * channel["range"] - channel["offset"]).astype(np.float32)
             fid = s * root.attrs["shard_size"] + i + 1
-            yield {"trace": trace, "source": (functions / f"{fid}.c").read_text(), "project": f"func_{fid}",
+            yield {"trace": trace, "source": source(fid), "project": f"func_{fid}",
                    "num_samples": len(trace)}
 
 
 def build(src, functions=None):
     root = zarr.open_group(src, mode="r")
-    functions = Path(functions or root.attrs["func_dir"])
-    return Dataset.from_generator(lambda: rows(root, functions),
+    source = sources(Path(functions or root.attrs["func_dir"]))
+    return Dataset.from_generator(lambda: rows(root, source),
                                   info=DatasetInfo(description=json.dumps(dict(root.attrs))))
 
 
 @click.command()
 @click.argument("src")
 @click.argument("dst")
-@click.option("--functions", help="Directory with the functions' <id>.c (default: the capture's func_dir).")
+@click.option("--functions", help="A jsonl of the functions' sources or a directory of <id>.c (default: the capture's func_dir).")
 def main(src, dst, functions):
     build(src, functions).save_to_disk(dst)
 
