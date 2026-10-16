@@ -2,7 +2,7 @@
 name = "zapdos-dataset"
 version = "0.5.0"
 requires-python = ">=3.11"
-dependencies = ["click", "datasets", "numpy", "zarr>=3"]
+dependencies = ["capstone", "click", "datasets", "numpy", "zarr>=3"]
 
 [project.scripts]
 zapdos-dataset = "zapdos_dataset:main"

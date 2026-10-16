@@ -1,15 +1,19 @@
-"""Turn a raw scakit function capture into a Hugging Face dataset for zapdos-alignment's annotate.py, with columns
-"trace" (the repetitions averaged, in volts, float32, cropped to the trigger pulse), "source" (the function's C code),
-"project" and "num_samples". The capture's attributes go into info.description.
+"""Turn a raw scakit function capture into a Hugging Face dataset, with columns "trace" (the repetitions averaged, in
+volts, float32, cropped to the trigger pulse), "source" (the function's C code), "project" and "num_samples".
+If scakit's func_annotate ran on the capture, also "instructions" (as executed on the device, immediates as #imm),
+"timestamps" (the trace sample each starts at) and "cycles" (the pulse's length in device cycles).
+The capture's attributes go into info.description.
 
     zapdos-functions captures/capture_<...>/ my-dataset/
 """
 import json
+import re
 from pathlib import Path
 
 import click
 import numpy as np
 import zarr
+from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from datasets import Dataset, DatasetInfo
 
 
@@ -19,6 +23,16 @@ def sources(path):
         texts = [json.loads(line)["source"] for line in path.open()]
         return lambda fid: texts[fid - 1]
     return lambda fid: (path / f"{fid}.c").read_text()
+
+
+def instructions(shard, i, start):
+    """func_annotate's executed instructions of function i, and the samples they start at relative to start."""
+    lo, hi = shard["instr_offsets"][i:i + 2]
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+    text = [next(md.disasm(int(op).to_bytes(4, "little")[:size], 0))
+            for op, size in zip(shard["instr_opcode"][lo:hi], shard["instr_size"][lo:hi])]
+    return ([re.sub(r"#-?(0x)?[0-9a-f]+", "#imm", f"{ins.mnemonic} {ins.op_str}".strip()) for ins in text],
+            (shard["instr_sample"][lo:hi] - start).tolist())
 
 
 def rows(root, source):
@@ -36,8 +50,11 @@ def rows(root, source):
             counts = traces[ok[i][:len(traces)], start:end].mean(axis=0, dtype=np.float64)
             trace = (((counts - lo) / (hi - lo) - 0.5) * 2 * channel["range"] - channel["offset"]).astype(np.float32)
             fid = s * root.attrs["shard_size"] + i + 1
-            yield {"trace": trace, "source": source(fid), "project": f"func_{fid}",
-                   "num_samples": len(trace)}
+            row = {"trace": trace, "source": source(fid), "project": f"func_{fid}", "num_samples": len(trace)}
+            if "instr_offsets" in shard:
+                row["instructions"], row["timestamps"] = instructions(shard, i, start)
+                row["cycles"] = int(shard["func_pulse_cycles"][i])
+            yield row
 
 
 def build(src, functions=None):
