@@ -8,6 +8,7 @@ The capture's attributes go into info.description.
 """
 import json
 import re
+import uuid
 from pathlib import Path
 
 import click
@@ -61,6 +62,7 @@ def build(src, functions=None):
     root = zarr.open_group(src, mode="r")
     source = sources(Path(functions or root.attrs["func_dir"]))
     return Dataset.from_generator(lambda: rows(root, source),
+                                  fingerprint=uuid.uuid4().hex,  # never reuse a cached build of an earlier capture
                                   info=DatasetInfo(description=json.dumps(dict(root.attrs))))
 
 
