@@ -5,6 +5,7 @@ The capture's zarr.json files go into info.description.
     zapdos-dataset captures/capture_<...>/ my-dataset/
 """
 import json
+import uuid
 from pathlib import Path
 
 import click
@@ -48,6 +49,7 @@ def build(src, keep_repetitions=False, sequences_path=None):
     text = sequences(Path(sequences_path))
     metadata = {p.parent.name: json.loads(p.read_text()) for p in [src / "zarr.json", *sorted(src.glob("*/zarr.json"))]}
     return Dataset.from_generator(lambda: capture_rows(root, text, keep_repetitions),
+                                  fingerprint=uuid.uuid4().hex,  # never reuse a cached build of an earlier capture
                                   info=DatasetInfo(description=json.dumps(metadata)))
 
 
