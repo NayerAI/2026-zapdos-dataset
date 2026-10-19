@@ -13,3 +13,4 @@ Plot a row's mean trace, optionally with every repetition (needs `--keep-repetit
 
     zapdos-plot my-dataset/ 12  # project func_12 (or trace_12)
     zapdos-plot my-dataset/ 12 --repetitions --std --instructions -o func_12.png
+    zapdos-plot my-dataset/ 12 --instructions --range 1000:5000  # only samples 1000 to 4999
