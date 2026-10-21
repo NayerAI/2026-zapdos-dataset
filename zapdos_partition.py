@@ -1,12 +1,13 @@
 """Split a dataset made by zapdos-dataset, zapdos-functions or zapdos-split into "train", "validation" and "test", so
-the training repo reads a fixed split instead of drawing its own. The split is by "project": all rows of a project (a
-function's chunks after zapdos-split) go to the same side, so no function is trained on and evaluated on.
+the training repo reads a fixed split instead of drawing its own. The split is by "group" (--group-by): all rows of a
+group (a function's chunks after zapdos-split) go to the same side, so no function is trained on and evaluated on.
 
---validation and --test are a fraction of the rows when at most 1, else a number of rows. Projects are shuffled with
+--validation and --test are a fraction of the rows when at most 1, else a number of rows. Groups are shuffled with
 --seed and taken whole until a side has at least that many rows, test first, then validation; the rest is train.
 
     zapdos-partition my-dataset-split/ my-dataset-final/
     zapdos-partition my-dataset-split/ my-dataset-final/ --validation 0.1 --test 0.1 --seed 1
+    zapdos-partition my-dataset/ my-dataset-final/ --group-by project  # zapdos-functions output, not chunked
 """
 import random
 
@@ -43,12 +44,15 @@ def group_split(groups, sizes, seed=42):
 @click.argument("dst")
 @click.option("--validation", default=0.1, show_default=True, help="Validation rows: <=1 a fraction, >1 a count.")
 @click.option("--test", default=0.1, show_default=True, help="Test rows: <=1 a fraction, >1 a count.")
-@click.option("--seed", default=42, show_default=True, help="Seed of the project shuffle.")
-def main(src, dst, validation, test, seed):
+@click.option("--seed", default=42, show_default=True, help="Seed of the group shuffle.")
+@click.option("--group-by", default="group", show_default=True, help="Column whose rows stay on one side together.")
+def main(src, dst, validation, test, seed, group_by):
     dataset = load_from_disk(src)
     if not isinstance(dataset, Dataset):
         raise click.ClickException(f"{src} is already split into {', '.join(dataset)}")
-    groups = list(dataset["project"])
+    if group_by not in dataset.column_names:
+        raise click.ClickException(f"the dataset has no {group_by!r} column (it has {', '.join(dataset.column_names)})")
+    groups = list(dataset[group_by])
     test_idx, validation_idx, train_idx = group_split(
         groups, [rows_wanted(test, len(groups)), rows_wanted(validation, len(groups))], seed)
     if not train_idx:
@@ -56,7 +60,7 @@ def main(src, dst, validation, test, seed):
     splits = DatasetDict({"train": dataset.select(train_idx), "validation": dataset.select(validation_idx),
                           "test": dataset.select(test_idx)})
     for name, split in splits.items():
-        click.echo(f"{name}: {len(split)} rows, {len(set(split['project']))} projects")
+        click.echo(f"{name}: {len(split)} rows, {len(set(split[group_by]))} groups")
     splits.save_to_disk(dst)
 
 
