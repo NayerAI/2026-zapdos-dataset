@@ -14,3 +14,10 @@ Plot a row's mean trace, optionally with every repetition (needs `--keep-repetit
     zapdos-plot my-dataset/ 12  # project func_12 (or trace_12)
     zapdos-plot my-dataset/ 12 --repetitions --std --instructions -o func_12.png
     zapdos-plot my-dataset/ 12 --instructions --range 1000:5000  # only samples 1000 to 4999
+
+Split a dataset into "train", "validation" and "test" for training, by "project" so a function's rows (or its chunks
+after [zapdos-split](https://github.com/NayerAI/2026-zapdos-splitting)) never end up on two sides. Run it last, on what
+the training repo should read; sizes at most 1 are fractions of the rows, larger ones row counts:
+
+    zapdos-partition my-dataset-split/ my-dataset-final/                      # 10% validation, 10% test
+    zapdos-partition my-dataset-split/ my-dataset-final/ --validation 1000 --test 1000 --seed 42
