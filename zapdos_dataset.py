@@ -1,17 +1,43 @@
 """Turn a raw scakit seqdemo capture into a Hugging Face dataset with columns "audio" (the repetitions averaged,
-float32), "text" (the listing verbatim), "opcodes", "project" and "num_samples".
+float32), "text" (the listing verbatim), "opcodes", "project" and "num_samples", split into "train", "validation" and
+"test".
 The capture's zarr.json files go into info.description.
 
     zapdos-dataset captures/capture_<...>/ my-dataset/
+    zapdos-dataset captures/capture_<...>/ my-dataset/ --validation 1000 --test 1000 --seed 1
 """
 import json
+import random
 import uuid
 from pathlib import Path
 
 import click
 import numpy as np
 import zarr
-from datasets import Dataset, DatasetInfo
+from datasets import Dataset, DatasetDict, DatasetInfo
+
+
+def split(dataset, validation, test, seed):
+    """Shuffle the rows with seed into "train", "validation" and "test", each in capture order. A size at most 1 is a
+    fraction of the rows, a larger one a row count. A row is a whole sequence or function, so none is on two sides."""
+    wanted = lambda size: min(int(size * len(dataset) if size <= 1 else size), len(dataset))
+    order = list(range(len(dataset)))
+    random.Random(seed).shuffle(order)
+    n_test, n_validation = wanted(test), wanted(validation)
+    if n_test + n_validation >= len(dataset):
+        raise click.ClickException(f"--validation and --test leave none of the {len(dataset)} rows to train on")
+    sides = {"train": order[n_test + n_validation:], "validation": order[n_test:n_test + n_validation],
+             "test": order[:n_test]}
+    return DatasetDict({name: dataset.select(sorted(rows)) for name, rows in sides.items()})
+
+
+def split_options(command):
+    """The --validation, --test and --seed options of split."""
+    command = click.option("--seed", default=42, show_default=True, help="Seed of the split's shuffle.")(command)
+    command = click.option("--test", default=0.1, show_default=True,
+                           help="Test rows: <=1 a fraction, >1 a count.")(command)
+    return click.option("--validation", default=0.1, show_default=True,
+                        help="Validation rows: <=1 a fraction, >1 a count.")(command)
 
 
 def row(name, traces, text, keep_repetitions=False):
@@ -58,8 +84,9 @@ def build(src, keep_repetitions=False, sequences_path=None):
 @click.argument("dst")
 @click.option("--keep-repetitions", is_flag=True, help="Store every repetition instead of their mean.")
 @click.option("--sequences", help="A sequences .jsonl file or a directory of .s files (default: what the capture was recorded from).")
-def main(src, dst, keep_repetitions, sequences):
-    build(src, keep_repetitions, sequences).save_to_disk(dst)
+@split_options
+def main(src, dst, keep_repetitions, sequences, validation, test, seed):
+    split(build(src, keep_repetitions, sequences), validation, test, seed).save_to_disk(dst)
 
 
 if __name__ == "__main__":

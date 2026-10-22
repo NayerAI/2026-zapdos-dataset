@@ -4,9 +4,11 @@ If scakit's func_annotate ran on the capture, also "instructions" (as executed o
 "timestamps" (the trace sample each starts at) and "cycles" (the pulse's length in device cycles).
 With --std, also "std" (the per-sample standard deviation over the repetitions, float32), and with
 --keep-repetitions "repetitions" (every repetition the mean was taken over, one row each; large).
-The capture's attributes go into info.description.
+The rows are split into "train", "validation" and "test" by function. The capture's attributes go into
+info.description.
 
     zapdos-functions captures/capture_<...>/ my-dataset/
+    zapdos-functions captures/capture_<...>/ my-dataset/ --validation 1000 --test 1000 --seed 1
 """
 import json
 import re
@@ -18,6 +20,8 @@ import numpy as np
 import zarr
 from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from datasets import Dataset, DatasetInfo
+
+from zapdos_dataset import split, split_options
 
 
 def sources(path):
@@ -79,8 +83,9 @@ def build(src, functions=None, std=False, keep_repetitions=False):
 @click.option("--std", is_flag=True, help="Also store the per-sample standard deviation over the repetitions.")
 @click.option("--keep-repetitions", is_flag=True, help="Also store every repetition (one trace's size each).")
 @click.option("--functions", help="A jsonl of the functions' sources or a directory of <id>.c (default: the capture's func_dir).")
-def main(src, dst, std, keep_repetitions, functions):
-    build(src, functions, std, keep_repetitions).save_to_disk(dst)
+@split_options
+def main(src, dst, std, keep_repetitions, functions, validation, test, seed):
+    split(build(src, functions, std, keep_repetitions), validation, test, seed).save_to_disk(dst)
 
 
 if __name__ == "__main__":
