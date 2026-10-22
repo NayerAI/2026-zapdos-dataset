@@ -1,6 +1,6 @@
 [project]
 name = "zapdos-dataset"
-version = "0.7.0"
+version = "0.8.0"
 requires-python = ">=3.11"
 dependencies = ["capstone", "click", "datasets", "matplotlib", "numpy", "zarr>=3"]
 
@@ -8,11 +8,11 @@ dependencies = ["capstone", "click", "datasets", "matplotlib", "numpy", "zarr>=3
 zapdos-dataset = "zapdos_dataset:main"
 zapdos-functions = "zapdos_functions:main"
 zapdos-plot = "zapdos_plot:main"
-zapdos-partition = "zapdos_partition:main"
+zapdos-split = "zapdos_split:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-include = ["zapdos_dataset.py", "zapdos_functions.py", "zapdos_plot.py", "zapdos_partition.py"]
+include = ["zapdos_dataset.py", "zapdos_functions.py", "zapdos_plot.py", "zapdos_split.py"]

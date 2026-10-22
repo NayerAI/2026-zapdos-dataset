@@ -1,13 +1,13 @@
-"""Split a dataset made by zapdos-dataset, zapdos-functions or zapdos-split into "train", "validation" and "test", so
+"""Split a dataset made by zapdos-dataset, zapdos-functions or zapdos-chunk into "train", "validation" and "test", so
 the training repo reads a fixed split instead of drawing its own. The split is by "group" (--group-by): all rows of a
-group (a function's chunks after zapdos-split) go to the same side, so no function is trained on and evaluated on.
+group (a function's chunks after zapdos-chunk) go to the same side, so no function is trained on and evaluated on.
 
 --validation and --test are a fraction of the rows when at most 1, else a number of rows. Groups are shuffled with
 --seed and taken whole until a side has at least that many rows, test first, then validation; the rest is train.
 
-    zapdos-partition my-dataset-split/ my-dataset-final/
-    zapdos-partition my-dataset-split/ my-dataset-final/ --validation 0.1 --test 0.1 --seed 1
-    zapdos-partition my-dataset/ my-dataset-final/ --group-by project  # zapdos-functions output, not chunked
+    zapdos-split my-dataset-chunks/ my-dataset-final/
+    zapdos-split my-dataset-chunks/ my-dataset-final/ --validation 0.1 --test 0.1 --seed 1
+    zapdos-split my-dataset/ my-dataset-final/ --group-by project  # zapdos-functions output, not chunked
 """
 import random
 
