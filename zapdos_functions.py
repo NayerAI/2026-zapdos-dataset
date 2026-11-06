@@ -1,16 +1,5 @@
-"""Turn a raw scakit function capture into a Hugging Face dataset, with columns "trace" (the repetitions averaged, in
-volts, float32, cropped to the trigger pulse), "source" (the function's C code), "project" and "num_samples".
-If scakit's func_annotate ran on the capture, also "instructions" (as executed on the device, immediates as #imm),
-"timestamps" (the trace sample each starts at) and "cycles" (the pulse's length in device cycles).
-With --std, also "std" (the per-sample standard deviation over the repetitions, float32), and with
---keep-repetitions "repetitions" (every repetition the mean was taken over, one row each; large).
-The rows are split into "train", "validation" and "test" by function. The capture's attributes go into
-info.description.
-
-    zapdos-functions captures/capture_<...>/ my-dataset/
-    zapdos-functions captures/capture_<...>/ my-dataset/ --validation 1000 --test 1000 --seed 1
-"""
 import json
+import random
 import re
 import uuid
 from pathlib import Path
@@ -19,73 +8,141 @@ import click
 import numpy as np
 import zarr
 from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
-from datasets import Dataset, DatasetInfo
+from datasets import Dataset, DatasetDict, DatasetInfo
 
-from zapdos_dataset import split, split_options
+
+def number_of_rows(size, total):
+    """A size at most 1 is a fraction of the rows, a larger one a row count."""
+    if size <= 1:
+        count = int(size * total)
+    else:
+        count = int(size)
+
+    return min(count, total)
+
+
+def split(dataset, validation, test, seed):
+    """Shuffle the functions into "train", "validation" and "test", each kept in capture order."""
+    total = len(dataset)
+    n_validation = number_of_rows(validation, total)
+    n_test = number_of_rows(test, total)
+
+    if n_validation + n_test >= total:
+        raise click.ClickException(f"--validation and --test leave none of the {total} rows to train on")
+
+    order = list(range(total))
+    random.Random(seed).shuffle(order)
+
+    test_rows = order[:n_test]
+    validation_rows = order[n_test:n_test + n_validation]
+    train_rows = order[n_test + n_validation:]
+
+    return DatasetDict({
+        "train": dataset.select(sorted(train_rows)),
+        "validation": dataset.select(sorted(validation_rows)),
+        "test": dataset.select(sorted(test_rows)),
+    })
 
 
 def sources(path):
-    """function id -> C source, from a jsonl file (one {"source": ...} per line, in id order) or a directory of <id>.c."""
+    """Function id -> C source, from a jsonl file (one {"source": ...} per line, in id order) or a directory of <id>.c."""
     if path.is_file():
         texts = [json.loads(line)["source"] for line in path.open()]
-        return lambda fid: texts[fid - 1]
-    return lambda fid: (path / f"{fid}.c").read_text()
+
+        def source(function_id):
+            return texts[function_id - 1]
+    else:
+        def source(function_id):
+            return (path / f"{function_id}.c").read_text()
+
+    return source
 
 
 def instructions(shard, i, start):
     """func_annotate's executed instructions of function i, and the samples they start at relative to start."""
-    lo, hi = shard["instr_offsets"][i:i + 2]
-    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
-    text = [next(md.disasm(int(op).to_bytes(4, "little")[:size], 0))
-            for op, size in zip(shard["instr_opcode"][lo:hi], shard["instr_size"][lo:hi])]
-    return ([re.sub(r"#-?(0x)?[0-9a-f]+", "#imm", f"{ins.mnemonic} {ins.op_str}".strip()) for ins in text],
-            (shard["instr_sample"][lo:hi] - start).tolist())
+    lo = shard["instr_offsets"][i]
+    hi = shard["instr_offsets"][i + 1]
+    opcodes = shard["instr_opcode"][lo:hi]
+    sizes = shard["instr_size"][lo:hi]
+    samples = shard["instr_sample"][lo:hi]
+
+    disassembler = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+
+    texts = []
+    for opcode, size in zip(opcodes, sizes):
+        code = int(opcode).to_bytes(4, "little")[:size]
+        instruction = next(disassembler.disasm(code, 0))
+        text = f"{instruction.mnemonic} {instruction.op_str}".strip()
+        texts.append(re.sub(r"#-?(0x)?[0-9a-f]+", "#imm", text))
+
+    timestamps = (samples - start).tolist()
+
+    return texts, timestamps
 
 
-def rows(root, source, std=False, keep_repetitions=False):
+def rows(root, source):
+    """One row per function: the mean and standard deviation over its repetitions in volts, cropped to the function."""
     channel = root.attrs["scope"]["channels"][0]
-    lo, hi = root.attrs["adc_mincount"], root.attrs["adc_maxcount"]
-    volts = lambda counts: ((counts - lo) / (hi - lo) - 0.5) * 2 * channel["range"] - channel["offset"]
+    adc_min = root.attrs["adc_mincount"]
+    adc_max = root.attrs["adc_maxcount"]
+    volts_per_count = 2 * channel["range"] / (adc_max - adc_min)
+
+    # The capture aligns every function's trace so that it starts at the same sample.
+    start = round(root.attrs["alignment"]["rise_sample"])
+
     for s in range(root.attrs["num_shards"]):
         shard = root[f"shard_{s:02d}"]
-        offsets, samples = shard["func_offsets"][:], shard["func_samples"][:]
-        rise, fall, ok = shard["func_rise_sample"][:], shard["func_fall_sample"][:], shard["func_edge_flags"][:] == 0
-        for i, n in enumerate(samples):
-            if not ok[i].any():
-                continue  # no repetition with both trigger edges
-            traces = shard["traces"][offsets[i]:offsets[i + 1]].reshape(-1, n)
-            start, end = round(np.median(rise[i][ok[i]])), round(np.median(fall[i][ok[i]]))
-            reps = traces[ok[i][:len(traces)], start:end]
-            trace = volts(reps.mean(axis=0, dtype=np.float64)).astype(np.float32)
-            fid = s * root.attrs["shard_size"] + i + 1
-            row = {"trace": trace, "source": source(fid), "project": f"func_{fid}", "num_samples": len(trace)}
-            if std:
-                row["std"] = (reps.std(axis=0, dtype=np.float64) * 2 * channel["range"] / (hi - lo)).astype(np.float32)
-            if keep_repetitions:
-                row["repetitions"] = volts(reps.astype(np.float32))
+        offsets = shard["func_offsets"][:]
+        ends = shard["func_exit_sample"][:]
+
+        for i in range(len(ends)):
+            lo = int(offsets[i]) + start
+            hi = int(offsets[i]) + int(ends[i])
+
+            mean = shard["traces"][lo:hi].astype(np.float64)
+            std = shard["traces_std"][lo:hi].astype(np.float64)
+
+            trace = ((mean - adc_min) * volts_per_count - channel["range"] - channel["offset"]).astype(np.float32)
+            std = (std * volts_per_count).astype(np.float32)
+
+            function_id = s * root.attrs["shard_size"] + i + 1
+
+            row = {
+                "trace": trace,
+                "std": std,
+                "source": source(function_id),
+                "project": f"func_{function_id}",
+                "num_samples": len(trace),
+            }
+
             if "instr_offsets" in shard:
                 row["instructions"], row["timestamps"] = instructions(shard, i, start)
                 row["cycles"] = int(shard["func_pulse_cycles"][i])
+
             yield row
 
 
-def build(src, functions=None, std=False, keep_repetitions=False):
+def build(src, functions=None):
     root = zarr.open_group(src, mode="r")
     source = sources(Path(functions or root.attrs["func_dir"]))
-    return Dataset.from_generator(lambda: rows(root, source, std, keep_repetitions),
-                                  fingerprint=uuid.uuid4().hex,  # never reuse a cached build of an earlier capture
-                                  info=DatasetInfo(description=json.dumps(dict(root.attrs))))
+
+    return Dataset.from_generator(
+        lambda: rows(root, source),
+        fingerprint=uuid.uuid4().hex,  # never reuse a cached build of an earlier capture
+        info=DatasetInfo(description=json.dumps(dict(root.attrs))),
+    )
 
 
 @click.command()
 @click.argument("src")
 @click.argument("dst")
-@click.option("--std", is_flag=True, help="Also store the per-sample standard deviation over the repetitions.")
-@click.option("--keep-repetitions", is_flag=True, help="Also store every repetition (one trace's size each).")
 @click.option("--functions", help="A jsonl of the functions' sources or a directory of <id>.c (default: the capture's func_dir).")
-@split_options
-def main(src, dst, std, keep_repetitions, functions, validation, test, seed):
-    split(build(src, functions, std, keep_repetitions), validation, test, seed).save_to_disk(dst)
+@click.option("--validation", default=0.1, show_default=True, help="Validation rows: <=1 a fraction, >1 a count.")
+@click.option("--test", default=0.1, show_default=True, help="Test rows: <=1 a fraction, >1 a count.")
+@click.option("--seed", default=42, show_default=True, help="Seed of the split's shuffle.")
+def main(src, dst, functions, validation, test, seed):
+    dataset = build(src, functions)
+    split(dataset, validation, test, seed).save_to_disk(dst)
 
 
 if __name__ == "__main__":
