@@ -21,26 +21,38 @@ def number_of_rows(size, total):
 
 
 def split(dataset, validation, test, seed):
-    """Shuffle the functions into "train", "validation" and "test", each kept in capture order."""
-    total = len(dataset)
-    n_validation = number_of_rows(validation, total)
-    n_test = number_of_rows(test, total)
+    """Split by project into "train", "validation" and "test", each kept in capture order: the projects are shuffled
+    and taken whole until test, then validation, has at least its size in rows; the rest is train."""
+    projects = list(dataset["project"])
+    total = len(projects)
 
-    if n_validation + n_test >= total:
-        raise click.ClickException(f"--validation and --test leave none of the {total} rows to train on")
+    counts = {}
+    for project in projects:
+        counts[project] = counts.get(project, 0) + 1
 
-    order = list(range(total))
+    order = sorted(counts)
     random.Random(seed).shuffle(order)
 
-    test_rows = order[:n_test]
-    validation_rows = order[n_test:n_test + n_validation]
-    train_rows = order[n_test + n_validation:]
+    side = {}
+    remaining = iter(order)
+    for name, size in (("test", test), ("validation", validation)):
+        wanted = number_of_rows(size, total)
+        taken = 0
+        while taken < wanted and (project := next(remaining, None)) is not None:
+            side[project] = name
+            taken += counts[project]
 
-    return DatasetDict({
-        "train": dataset.select(sorted(train_rows)),
-        "validation": dataset.select(sorted(validation_rows)),
-        "test": dataset.select(sorted(test_rows)),
-    })
+    indices = {"train": [], "validation": [], "test": []}
+    for i, project in enumerate(projects):
+        indices[side.get(project, "train")].append(i)
+
+    if not indices["train"]:
+        raise click.ClickException(f"--validation and --test leave none of the {len(counts)} projects to train on")
+
+    for name, rows in indices.items():
+        click.echo(f"{name}: {len(rows)} rows, {len({projects[i] for i in rows})} projects", err=True)
+
+    return DatasetDict({name: dataset.select(rows) for name, rows in indices.items()})
 
 
 KEYS = ("digest", "project", "path", "name", "sample", "instructions")
@@ -158,7 +170,7 @@ def build(src, jsonl):
               help='The captured functions, one {"digest", "project", "path", "name", "sample", "instructions"} per line in id order.')
 @click.option("--validation", default=0.1, show_default=True, help="Validation rows: <=1 a fraction, >1 a count.")
 @click.option("--test", default=0.1, show_default=True, help="Test rows: <=1 a fraction, >1 a count.")
-@click.option("--seed", default=42, show_default=True, help="Seed of the split's shuffle.")
+@click.option("--seed", default=42, show_default=True, help="Seed of the projects' shuffle.")
 def main(src, dst, functions, validation, test, seed):
     dataset = build(src, functions)
     split(dataset, validation, test, seed).save_to_disk(dst)
