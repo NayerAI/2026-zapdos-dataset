@@ -2,7 +2,6 @@ import json
 import random
 import re
 import uuid
-from pathlib import Path
 
 import click
 import numpy as np
@@ -44,18 +43,29 @@ def split(dataset, validation, test, seed):
     })
 
 
-def sources(path):
-    """Function id -> C source, from a jsonl file (one {"source": ...} per line, in id order) or a directory of <id>.c."""
-    if path.is_file():
-        texts = [json.loads(line)["source"] for line in path.open()]
+KEYS = ("digest", "project", "path", "name", "sample", "instructions")
 
-        def source(function_id):
-            return texts[function_id - 1]
-    else:
-        def source(function_id):
-            return (path / f"{function_id}.c").read_text()
 
-    return source
+def functions(path):
+    """The functions' records, in id order: a jsonl of {"digest", "project", "path", "name", "sample", "instructions"}."""
+    records = []
+    with open(path) as file:
+        for number, line in enumerate(file, 1):
+            if not line.strip():
+                continue
+
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise click.ClickException(f"{path}:{number}: not JSON ({error})")
+
+            missing = [key for key in KEYS if key not in record] if isinstance(record, dict) else list(KEYS)
+            if missing:
+                raise click.ClickException(f"{path}:{number}: missing {', '.join(missing)}")
+
+            records.append(record)
+
+    return records
 
 
 def instructions(shard, i, start):
@@ -80,7 +90,7 @@ def instructions(shard, i, start):
     return texts, timestamps
 
 
-def rows(root, source):
+def rows(root, records):
     """One row per function: the mean and standard deviation over its repetitions in volts, cropped to the function."""
     channel = root.attrs["scope"]["channels"][0]
     adc_min = root.attrs["adc_mincount"]
@@ -106,12 +116,20 @@ def rows(root, source):
             std = (std * volts_per_count).astype(np.float32)
 
             function_id = s * root.attrs["shard_size"] + i + 1
+            if function_id > len(records):
+                raise click.ClickException(f"the capture has function {function_id}, the jsonl only {len(records)}")
+            record = records[function_id - 1]
 
             row = {
+                "id": function_id,
                 "trace": trace,
                 "std": std,
-                "source": source(function_id),
-                "project": f"func_{function_id}",
+                "source": record["sample"],
+                "digest": record["digest"],
+                "project": record["project"],
+                "path": record["path"],
+                "name": record["name"],
+                "num_instructions": record["instructions"],
                 "num_samples": len(trace),
             }
 
@@ -122,12 +140,12 @@ def rows(root, source):
             yield row
 
 
-def build(src, functions=None):
+def build(src, jsonl):
     root = zarr.open_group(src, mode="r")
-    source = sources(Path(functions or root.attrs["func_dir"]))
+    records = functions(jsonl)
 
     return Dataset.from_generator(
-        lambda: rows(root, source),
+        lambda: rows(root, records),
         fingerprint=uuid.uuid4().hex,  # never reuse a cached build of an earlier capture
         info=DatasetInfo(description=json.dumps(dict(root.attrs))),
     )
@@ -136,7 +154,8 @@ def build(src, functions=None):
 @click.command()
 @click.argument("src")
 @click.argument("dst")
-@click.option("--functions", help="A jsonl of the functions' sources or a directory of <id>.c (default: the capture's func_dir).")
+@click.option("--functions", required=True, type=click.Path(exists=True, dir_okay=False),
+              help='The captured functions, one {"digest", "project", "path", "name", "sample", "instructions"} per line in id order.')
 @click.option("--validation", default=0.1, show_default=True, help="Validation rows: <=1 a fraction, >1 a count.")
 @click.option("--test", default=0.1, show_default=True, help="Test rows: <=1 a fraction, >1 a count.")
 @click.option("--seed", default=42, show_default=True, help="Seed of the split's shuffle.")

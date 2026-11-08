@@ -7,16 +7,21 @@ from datasets import load_from_disk
 
 
 def find(dataset, id):
-    """The row whose project is id, or func_<id> for a bare number."""
-    projects = list(dataset["project"])
+    """The row of function number id, or the first whose digest or name is id."""
+    ids = list(dataset["id"])
 
-    for i, project in enumerate(projects):
-        if project == id:
-            return dataset[i]
-        if id.isdigit() and project == f"func_{int(id)}":
-            return dataset[i]
+    if id.isdigit():
+        for i, number in enumerate(ids):
+            if number == int(id):
+                return dataset[i]
+    else:
+        for key in ("digest", "name"):
+            for i, value in enumerate(list(dataset[key])):
+                if value == id:
+                    return dataset[i]
 
-    raise click.BadParameter(f"no project {id!r} (e.g. {', '.join(projects[:3])}, ...)", param_hint="ID")
+    raise click.BadParameter(f"no function {id!r} in this split (e.g. {', '.join(map(str, ids[:3]))}, ...)",
+                             param_hint="ID")
 
 
 def parse_range(ctx, param, value):
@@ -78,7 +83,7 @@ def main(dataset, id, show_std, show_instructions, crop, split, output):
                 ax.text(t, 1, f" {instruction}", transform=ax.get_xaxis_transform(), rotation=90, va="top",
                         ha="right", fontsize=6, color="tab:red", clip_on=True)
 
-    title = row["project"]
+    title = f"{row['id']}: {row['project']} {row['path']} {row['name']}"
     if row.get("cycles"):
         title += f", {row['cycles']} cycles"
 
