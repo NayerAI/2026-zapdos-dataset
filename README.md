@@ -1,10 +1,10 @@
 # zapdos-dataset
 
 Turns a scakit function capture, whose recordings are already aggregated into a mean and a standard deviation, into a
-Hugging Face dataset split into "train", "validation" and "test" (by default 10% each for validation and test; a size
-at most 1 is a fraction of the rows, a larger one a row count). The split is by project, so all functions of a project
-land in the same split: the projects are shuffled with `--seed` and taken whole until test, then validation, has at
-least its size in rows, so those two can come out somewhat larger than asked; the rest is train.
+Hugging Face dataset split by project into "train", "validation" and "test", so all functions of a project land in the
+same split (scikit-learn's `GroupShuffleSplit`, seeded with `--seed`). `--validation` and `--test` count projects, not
+rows: below 1 is a fraction of the projects, rounded up so that each split gets at least one, 1 or more a project
+count (by default 10% each).
 
     pip install "git+https://github.com/NayerAI/2026-zapdos-dataset.git@main"
     zapdos-functions captures/capture_<...>/ my-dataset/ --functions functions.jsonl

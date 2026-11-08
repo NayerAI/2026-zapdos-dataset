@@ -1,8 +1,8 @@
 [project]
 name = "zapdos-dataset"
-version = "0.12.0"
+version = "0.13.0"
 requires-python = ">=3.11"
-dependencies = ["capstone", "click", "datasets", "matplotlib", "numpy", "zarr>=3"]
+dependencies = ["capstone", "click", "datasets", "matplotlib", "numpy", "scikit-learn", "zarr>=3"]
 
 [project.scripts]
 zapdos-functions = "zapdos_functions:main"

@@ -1,5 +1,5 @@
 import json
-import random
+import math
 import re
 import uuid
 
@@ -8,51 +8,49 @@ import numpy as np
 import zarr
 from capstone import CS_ARCH_ARM, CS_MODE_THUMB, Cs
 from datasets import Dataset, DatasetDict, DatasetInfo
+from sklearn.model_selection import GroupShuffleSplit
 
 
-def number_of_rows(size, total):
-    """A size at most 1 is a fraction of the rows, a larger one a row count."""
-    if size <= 1:
-        count = int(size * total)
-    else:
-        count = int(size)
+def number_of_projects(size, total):
+    """A size below 1 is a fraction of the projects (rounded up, so a nonzero one takes at least one), a larger one a
+    project count."""
+    if size < 1:
+        return math.ceil(size * total)
 
-    return min(count, total)
+    return int(size)
+
+
+def take(rows, projects, count, seed):
+    """Split rows into those of count randomly chosen whole projects and the rest."""
+    if count == 0:
+        return np.array([], dtype=int), rows
+
+    splitter = GroupShuffleSplit(n_splits=1, test_size=count, random_state=seed)
+    rest, taken = next(splitter.split(rows, groups=projects[rows]))
+
+    return rows[taken], rows[rest]
 
 
 def split(dataset, validation, test, seed):
-    """Split by project into "train", "validation" and "test", each kept in capture order: the projects are shuffled
-    and taken whole until test, then validation, has at least its size in rows; the rest is train."""
-    projects = list(dataset["project"])
-    total = len(projects)
+    """Split by project into "train", "validation" and "test", each kept in capture order."""
+    projects = np.array(dataset["project"])
+    total = len(set(projects))
 
-    counts = {}
-    for project in projects:
-        counts[project] = counts.get(project, 0) + 1
+    n_test = number_of_projects(test, total)
+    n_validation = number_of_projects(validation, total)
 
-    order = sorted(counts)
-    random.Random(seed).shuffle(order)
+    if n_test + n_validation >= total:
+        raise click.ClickException(f"--validation ({n_validation}) and --test ({n_test}) leave none of the {total} "
+                                   "projects to train on")
 
-    side = {}
-    remaining = iter(order)
-    for name, size in (("test", test), ("validation", validation)):
-        wanted = number_of_rows(size, total)
-        taken = 0
-        while taken < wanted and (project := next(remaining, None)) is not None:
-            side[project] = name
-            taken += counts[project]
+    test_rows, rest = take(np.arange(len(projects)), projects, n_test, seed)
+    validation_rows, train_rows = take(rest, projects, n_validation, seed)
 
-    indices = {"train": [], "validation": [], "test": []}
-    for i, project in enumerate(projects):
-        indices[side.get(project, "train")].append(i)
+    splits = {"train": train_rows, "validation": validation_rows, "test": test_rows}
+    for name, rows in splits.items():
+        click.echo(f"{name}: {len(rows)} rows, {len(set(projects[rows]))} projects", err=True)
 
-    if not indices["train"]:
-        raise click.ClickException(f"--validation and --test leave none of the {len(counts)} projects to train on")
-
-    for name, rows in indices.items():
-        click.echo(f"{name}: {len(rows)} rows, {len({projects[i] for i in rows})} projects", err=True)
-
-    return DatasetDict({name: dataset.select(rows) for name, rows in indices.items()})
+    return DatasetDict({name: dataset.select(sorted(rows.tolist())) for name, rows in splits.items()})
 
 
 KEYS = ("digest", "project", "path", "name", "sample", "instructions")
@@ -168,12 +166,13 @@ def build(src, jsonl):
 @click.argument("dst")
 @click.option("--functions", required=True, type=click.Path(exists=True, dir_okay=False),
               help='The captured functions, one {"digest", "project", "path", "name", "sample", "instructions"} per line in id order.')
-@click.option("--validation", default=0.1, show_default=True, help="Validation rows: <=1 a fraction, >1 a count.")
-@click.option("--test", default=0.1, show_default=True, help="Test rows: <=1 a fraction, >1 a count.")
+@click.option("--validation", default=0.1, show_default=True, help="Validation projects: <1 a fraction, >=1 a count.")
+@click.option("--test", default=0.1, show_default=True, help="Test projects: <1 a fraction, >=1 a count.")
 @click.option("--seed", default=42, show_default=True, help="Seed of the projects' shuffle.")
 def main(src, dst, functions, validation, test, seed):
     dataset = build(src, functions)
-    split(dataset, validation, test, seed).save_to_disk(dst)
+    splits = split(dataset, validation, test, seed)
+    splits.save_to_disk(dst, num_shards={name: 1 for name, rows in splits.items() if len(rows) == 0} or None)
 
 
 if __name__ == "__main__":
