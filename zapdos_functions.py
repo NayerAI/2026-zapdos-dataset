@@ -19,8 +19,11 @@ def number_of_rows(size, total):
     return int(size)
 
 
-def split(total, validation, test, seed):
-    """Row numbers of "train", "validation" and "test" when split by function, each in capture order."""
+def split(candidates, validation, test, seed):
+    """Row numbers of "train", "validation" and "test" when the candidate rows are split by function, each in capture
+    order."""
+    candidates = np.array(candidates)
+    total = len(candidates)
     n_test = number_of_rows(test, total)
     n_validation = number_of_rows(validation, total)
 
@@ -28,7 +31,7 @@ def split(total, validation, test, seed):
         raise click.ClickException(f"--validation ({n_validation}) and --test ({n_test}) leave none of the {total} "
                                    "functions to train on")
 
-    order = np.random.default_rng(seed).permutation(total)
+    order = candidates[np.random.default_rng(seed).permutation(total)]
     test_rows = order[:n_test]
     validation_rows = order[n_test:n_test + n_validation]
     train_rows = order[n_test + n_validation:]
@@ -178,10 +181,12 @@ def build(root, records, level, annotated):
 @click.argument("dst")
 @click.option("--functions", "jsonl", required=True, type=click.Path(exists=True, dir_okay=False),
               help='The captured functions, one {"digest", "project", "path", "name", "sample", "instructions"} per line in id order.')
-@click.option("--validation", default=0.1, show_default=True, help="Validation functions: <1 a fraction, >=1 a count.")
-@click.option("--test", default=0.1, show_default=True, help="Test functions: <1 a fraction, >=1 a count.")
+@click.option("--project", "keep", multiple=True, default=("android-vuln", "tomita-parser"), show_default=True,
+              help="Keep only these projects' functions (repeat the option for several).")
+@click.option("--validation", default=20, show_default=True, help="Validation functions: <1 a fraction, >=1 a count.")
+@click.option("--test", default=17, show_default=True, help="Test functions: <1 a fraction, >=1 a count.")
 @click.option("--seed", default=42, show_default=True, help="Seed of the functions' shuffle.")
-def main(src, dst, jsonl, validation, test, seed):
+def main(src, dst, jsonl, keep, validation, test, seed):
     root = zarr.open_group(src, mode="r")
     records = functions(jsonl)
     annotated = annotations(root)
@@ -193,7 +198,12 @@ def main(src, dst, jsonl, validation, test, seed):
 
         # Every level gets the same rows in each split.
         if splits is None:
-            splits = split(len(dataset), validation, test, seed)
+            projects = dataset["project"]
+            candidates = [row for row, name in enumerate(projects) if name in keep]
+            if not candidates:
+                raise click.ClickException(f"no function of the projects {', '.join(keep)}")
+            click.echo(f"{', '.join(keep)}: {len(candidates)} of {len(projects)} functions", err=True)
+            splits = split(candidates, validation, test, seed)
 
         output = DatasetDict({name: dataset.select(rows) for name, rows in splits.items()})
         path = f"{dst}-rec{repetitions}" if len(counts) > 1 else dst
